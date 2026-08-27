@@ -143,6 +143,32 @@ quotas too — these checks are a backstop, not a substitute.
 
 ## Layout
 
+### This repository
+
+```
+ASMS_v2.0/
+├── assignment-admin      the single entry point — run this, not anything in scripts/
+├── VERSION
+├── scripts/               every module (install.sh, provision_*.sh, remove_*.sh,
+│                           configure_mounts.sh, verify_server.sh, backup/restore,
+│                           check_submissions.sh, the test_*.sh suite, ...)
+├── submit/                asms-submit.c (setuid shim) + asms-store (root helper)
+├── systemd/               asms-mounts.service (boot-time mount enforcement)
+├── data/config.conf       the single source of truth for shared values
+├── docs/                  student_guide.md, faculty_guide.md
+├── README.md / CHANGELOG.md
+```
+
+`assignment-admin` stays at the repository root — it's the one file you're
+ever told to run directly (`sudo ./assignment-admin`) — while every module it
+drives lives together in `scripts/`. Nothing else needs to know or care that
+the split exists: `install.sh` resolves module paths relative to `scripts/`
+and everything else (its own repo root, `data/`, `submit/`, `systemd/`)
+relative to one level up, and `assignment-admin` resolves `scripts/` the same
+way it already resolved the installed `modules/` directory.
+
+### Installed (`/opt/assignment-server`)
+
 ```
 /opt/assignment-server/
 ├── assignment-admin          menu interface (also /usr/local/sbin/)
@@ -163,7 +189,9 @@ quotas too — these checks are a backstop, not a substitute.
 `/opt/assignment-server` itself is `0700 root:root` — nothing under it is
 readable by anyone but root, including faculty. Any tool meant for
 non-root use (like `assignment-check`) is installed *outside* that tree for
-exactly this reason.
+exactly this reason. Note that `scripts/` in the repository becomes
+`modules/` once installed — `install.sh` renames the destination, not the
+source layout.
 
 ### Student enumeration
 
@@ -228,8 +256,10 @@ reports new configuration keys rather than merging them silently.
 ## Command reference
 
 Every module can be driven directly instead of through the menu — useful for
-scripting or automation. Each one also shows this same table with `-h`/`--help`.
-With no options, every module opens its own interactive menu.
+scripting or automation. In this repository they live in `scripts/` (e.g.
+`scripts/provision_students.sh`); once installed they're at
+`/opt/assignment-server/modules/`. Each one also shows this same table with
+`-h`/`--help`. With no options, every module opens its own interactive menu.
 
 ### `install.sh`
 
@@ -559,11 +589,11 @@ archive, and is actually read-only.
 Offline self-tests, plus one full system test.
 
 ```bash
-./test_utils.sh              # shared library: enumeration, passwords, validation
-./test_mounts.sh             # fstab editing, against a temp file
-./test_remove_students.sh    # removal accounting: archive outcomes, target resolution
-./test_check_submissions.sh  # assignment-check: enumeration, validation, reporting
-sudo ./integration_test.sh   # the whole system, on a real server
+./scripts/test_utils.sh              # shared library: enumeration, passwords, validation
+./scripts/test_mounts.sh             # fstab editing, against a temp file
+./scripts/test_remove_students.sh    # removal accounting: archive outcomes, target resolution
+./scripts/test_check_submissions.sh  # assignment-check: enumeration, validation, reporting
+sudo ./scripts/integration_test.sh   # the whole system, on a real server
 ```
 
 The first four need no root and no Linux-specific features — they stub
@@ -592,9 +622,9 @@ the configuration intends:
 `--with-reset` removes every student account on the host.
 
 ```bash
-sudo ./integration_test.sh                # everything except semester reset
-sudo ./integration_test.sh --with-reset    # including semester reset
-sudo ./integration_test.sh --cleanup       # remove test accounts and exit
+sudo ./scripts/integration_test.sh                # everything except semester reset
+sudo ./scripts/integration_test.sh --with-reset    # including semester reset
+sudo ./scripts/integration_test.sh --cleanup       # remove test accounts and exit
 ```
 
 Any failure naming isolation, read-only enforcement, or archive ownership

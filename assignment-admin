@@ -34,14 +34,14 @@ if [[ -f "${SELF_DIR}/modules/utils.sh" ]]; then
     ASMS_MODE="installed"
     ASMS_ROOT="$SELF_DIR"
     MODULE_DIR="${SELF_DIR}/modules"
-elif [[ -f "${SELF_DIR}/utils.sh" && -f "${SELF_DIR}/install.sh" ]]; then
+elif [[ -f "${SELF_DIR}/scripts/utils.sh" && -f "${SELF_DIR}/scripts/install.sh" ]]; then
     ASMS_MODE="source"
     ASMS_ROOT="$SELF_DIR"
-    MODULE_DIR="$SELF_DIR"
+    MODULE_DIR="${SELF_DIR}/scripts"
 else
     echo "ERROR: cannot locate the ASMS modules." >&2
     echo "Expected either ${SELF_DIR}/modules/utils.sh (installed)" >&2
-    echo "or ${SELF_DIR}/utils.sh next to install.sh (source tree)." >&2
+    echo "or ${SELF_DIR}/scripts/utils.sh next to scripts/install.sh (source tree)." >&2
     exit 1
 fi
 
@@ -247,11 +247,11 @@ run_installer() {
     header "Install ASMS"
 
     if [[ "$mode" == "check" ]]; then
-        ASMS_VIA_ADMIN=1 "${SELF_DIR}/install.sh" --check || true
+        ASMS_VIA_ADMIN=1 "${MODULE_DIR}/install.sh" --check || true
         return 0
     fi
 
-    if ! ASMS_VIA_ADMIN=1 "${SELF_DIR}/install.sh"; then
+    if ! ASMS_VIA_ADMIN=1 "${MODULE_DIR}/install.sh"; then
         error "Installation failed. Nothing was handed over."
         return 1
     fi
@@ -286,7 +286,7 @@ run_self_tests() {
     local failures=0 test_script
 
     for test_script in test_utils.sh test_mounts.sh test_remove_students.sh test_check_submissions.sh; do
-        if [[ ! -f "${SELF_DIR}/${test_script}" ]]; then
+        if [[ ! -f "${MODULE_DIR}/${test_script}" ]]; then
             warn "${test_script} is not present; skipping."
             continue
         fi
@@ -294,7 +294,7 @@ run_self_tests() {
         echo
         printf '\033[34m-- %s --\033[0m\n' "$test_script"
 
-        bash "${SELF_DIR}/${test_script}" || failures=$((failures + 1))
+        bash "${MODULE_DIR}/${test_script}" || failures=$((failures + 1))
     done
 
     echo
@@ -310,7 +310,7 @@ run_self_tests() {
 run_integration_test() {
     header "Full Integration Test"
 
-    [[ -f "${SELF_DIR}/integration_test.sh" ]] || {
+    [[ -f "${MODULE_DIR}/integration_test.sh" ]] || {
         error "integration_test.sh is not present."
         return 1
     }
@@ -321,7 +321,7 @@ run_integration_test() {
 
     confirm "Run the full integration test now?" || { info "Cancelled."; return 0; }
 
-    bash "${SELF_DIR}/integration_test.sh" || true
+    bash "${MODULE_DIR}/integration_test.sh" || true
 }
 
 source_banner() {

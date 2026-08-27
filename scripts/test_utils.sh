@@ -16,6 +16,7 @@
 set -Eeuo pipefail
 
 SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SRC_DIR}/.." && pwd)"
 
 PASS=0
 FAIL=0
@@ -136,7 +137,7 @@ echo
 # shellcheck source=/dev/null
 source "${SRC_DIR}/utils.sh"
 
-ASMS_CONFIG_FILE="${SRC_DIR}/data/config.conf"
+ASMS_CONFIG_FILE="${REPO_ROOT}/data/config.conf"
 load_config
 
 echo "Configuration"

@@ -9,6 +9,32 @@ This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### 2026-08-27 — Repository layout: `scripts/`
+
+- **All `.sh` modules moved into `scripts/`.** Previously every module sat
+  directly in the repository root alongside `README.md`, `docs/`, `submit/`,
+  and so on -- 21 script files cluttering the top level. They now live
+  together under `scripts/` (`scripts/install.sh`,
+  `scripts/provision_students.sh`, `scripts/test_utils.sh`, etc.).
+  `assignment-admin` deliberately stays at the repository root: it is the
+  one file anyone is ever told to run directly (`sudo ./assignment-admin`),
+  and it still detects source vs. installed mode the same way it always
+  did -- it just resolves the source-mode module directory to `scripts/`
+  instead of its own directory now, the same as it already resolved the
+  installed layout to `modules/`. No installed-server behaviour changes:
+  `install.sh` still stages everything into `/opt/assignment-server/modules/`
+  exactly as before, and `data/`, `submit/`, `systemd/`, and `docs/` are
+  untouched. `install.sh` gained a `REPO_ROOT` (one level above `scripts/`)
+  for the few things it installs that live outside `scripts/` --
+  `assignment-admin`, `VERSION`, `data/config.conf`, `submit/`, `systemd/`,
+  `templates/`. The three test scripts that resolve their own config path
+  (`test_utils.sh`, `test_mounts.sh`, `test_remove_students.sh`) needed the
+  same one-level-up fix; `test_check_submissions.sh` was unaffected, since
+  `check_submissions.sh` is self-contained and never sources `utils.sh`.
+  Verified with the full offline suite (135/135 assertions) plus a
+  standalone simulation of `assignment-admin`'s mode detection and
+  `install.sh`'s `require_source_files` against the real moved tree.
+
 ### 2026-08-19 — Faculty tooling, hardening follow-through, and docs
 
 - **Added `check_submissions.sh` (`assignment-check`).** Faculty previously

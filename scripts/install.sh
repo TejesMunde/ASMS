@@ -25,6 +25,11 @@ set -Eeuo pipefail
 
 SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
+# install.sh lives in scripts/ alongside the other modules it installs, but
+# assignment-admin, VERSION, data/, submit/, systemd/ and templates/ are one
+# level up, at the repository root.
+REPO_ROOT="$(cd -- "${SRC_DIR}/.." && pwd)"
+
 PREFIX="/opt/assignment-server"
 CHECK_ONLY=0
 
@@ -161,8 +166,15 @@ require_admin_entry() {
 require_source_files() {
     local missing=0 file
 
-    for file in "${MODULES[@]}" assignment-admin VERSION data/config.conf; do
+    for file in "${MODULES[@]}"; do
         if [[ ! -f "${SRC_DIR}/${file}" ]]; then
+            error "Missing source file: ${file}"
+            missing=1
+        fi
+    done
+
+    for file in assignment-admin VERSION data/config.conf; do
+        if [[ ! -f "${REPO_ROOT}/${file}" ]]; then
             error "Missing source file: ${file}"
             missing=1
         fi
@@ -192,7 +204,7 @@ load_source_config() {
     # The installed copy is authoritative once it exists.
     local config="${PREFIX}/data/config.conf"
 
-    [[ -f "$config" ]] || config="${SRC_DIR}/data/config.conf"
+    [[ -f "$config" ]] || config="${REPO_ROOT}/data/config.conf"
 
     # shellcheck disable=SC1090
     source "$config"
@@ -296,15 +308,15 @@ install_admin() {
     fi
 
     install -o root -g root -m 0750 \
-        "${SRC_DIR}/assignment-admin" "${PREFIX}/assignment-admin"
+        "${REPO_ROOT}/assignment-admin" "${PREFIX}/assignment-admin"
 
     install -o root -g root -m 0644 \
-        "${SRC_DIR}/VERSION" "${PREFIX}/VERSION"
+        "${REPO_ROOT}/VERSION" "${PREFIX}/VERSION"
 
     local doc
     for doc in README.md CHANGELOG.md; do
-        [[ -f "${SRC_DIR}/${doc}" ]] || continue
-        install -o root -g root -m 0644 "${SRC_DIR}/${doc}" "${PREFIX}/${doc}"
+        [[ -f "${REPO_ROOT}/${doc}" ]] || continue
+        install -o root -g root -m 0644 "${REPO_ROOT}/${doc}" "${PREFIX}/${doc}"
     done
 
     # A stable entry point on root's PATH.
@@ -315,7 +327,7 @@ install_admin() {
 }
 
 install_templates() {
-    [[ -d "${SRC_DIR}/templates" ]] || return 0
+    [[ -d "${REPO_ROOT}/templates" ]] || return 0
 
     step "Templates"
 
@@ -328,7 +340,7 @@ install_templates() {
     while IFS= read -r -d '' template; do
         install -o root -g root -m 0644 \
             "$template" "${PREFIX}/templates/$(basename "$template")"
-    done < <(find "${SRC_DIR}/templates" -maxdepth 1 -type f -print0)
+    done < <(find "${REPO_ROOT}/templates" -maxdepth 1 -type f -print0)
 
     success "Templates installed"
 }
@@ -340,7 +352,7 @@ install_config() {
     step "Configuration"
 
     local target="${PREFIX}/data/config.conf"
-    local source="${SRC_DIR}/data/config.conf"
+    local source="${REPO_ROOT}/data/config.conf"
 
     if [[ ! -f "$target" ]]; then
         if ((CHECK_ONLY)); then
@@ -380,8 +392,8 @@ install_config() {
 install_submit() {
     step "Submit command"
 
-    local csource="${SRC_DIR}/submit/asms-submit.c"
-    local helper="${SRC_DIR}/submit/asms-store"
+    local csource="${REPO_ROOT}/submit/asms-submit.c"
+    local helper="${REPO_ROOT}/submit/asms-store"
 
     if [[ ! -f "$csource" || ! -f "$helper" ]]; then
         warn "submit sources not present in this tree; skipping."
@@ -500,7 +512,7 @@ install_check_submissions() {
 install_systemd_unit() {
     step "Boot-time mount enforcement"
 
-    local unit_source="${SRC_DIR}/systemd/asms-mounts.service"
+    local unit_source="${REPO_ROOT}/systemd/asms-mounts.service"
     local unit_target="/etc/systemd/system/asms-mounts.service"
 
     [[ -f "$unit_source" ]] || {
@@ -580,7 +592,7 @@ main() {
     echo "=============================================="
     echo " ASMS Installer"
     echo "=============================================="
-    printf ' Source : %s\n' "$SRC_DIR"
+    printf ' Source : %s\n' "$REPO_ROOT"
     printf ' Prefix : %s\n' "$PREFIX"
     ((CHECK_ONLY)) && printf ' Mode   : check only (no changes)\n'
     echo "=============================================="

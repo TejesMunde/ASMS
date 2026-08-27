@@ -22,6 +22,7 @@
 set -Eeuo pipefail
 
 SRC_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd -- "${SRC_DIR}/.." && pwd)"
 
 PASS=0
 FAIL=0
@@ -129,7 +130,7 @@ USERDEL_SHOULD_FAIL_FOR=""
 echo "ASMS student removal self-check"
 echo
 
-export ASMS_CONFIG_FILE="${SRC_DIR}/data/config.conf"
+export ASMS_CONFIG_FILE="${REPO_ROOT}/data/config.conf"
 
 # require_root lives inside main() now, which this file never calls, so
 # sourcing needs no root and runs nothing destructive.
