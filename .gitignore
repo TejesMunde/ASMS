@@ -1,0 +1,19 @@
+# Real deployment data: rosters, generated credentials, and any local config
+# overrides never belong in a public template repo. See README's Configuration
+# section for what these files are for.
+data/
+credentials/
+logs/
+backups/
+archive/
+
+# Compiled artifacts
+submit/asms-submit
+*.o
+
+# Editor/OS noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

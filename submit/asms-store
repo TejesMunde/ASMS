@@ -1,0 +1,374 @@
+#!/usr/bin/env bash
+#
+# Assignment Server Management System (ASMS)
+# asms-store -- authoritative submission writer
+# Version: 2.0.0
+#
+# Runs as root. Invoked ONLY by the setuid submit shim, never directly by a
+# student and never on a student-controlled PATH.
+#
+#   asms-store <username> <assignment> <source-path>
+#
+# Installed root-owned and root-writable only (0700). The shim refuses to
+# exec it if that is not the case, because write access to this file is
+# write access to root.
+#
+# Everything the shim already checked is checked again here. The shim is not
+# treated as a trusted caller: if it is ever bypassed or replaced, these
+# checks are what still hold the security model together.
+#
+# @PREFIX@ is substituted by install.sh.
+#
+
+set -Eeuo pipefail
+
+ASMS_ROOT="@PREFIX@"
+
+# shellcheck source=/dev/null
+source "${ASMS_ROOT}/modules/utils.sh"
+# shellcheck source=/dev/null
+source "${ASMS_ROOT}/modules/logger.sh"
+
+load_config
+
+# ---------------------------------------------------------------------------
+
+RESERVED_DIR=""
+
+# A failed submission must never leave a half-written version in the archive
+# for a student or faculty member to mistake for real work.
+cleanup() {
+    local rc=$?
+
+    if ((rc != 0)) && [[ -n "$RESERVED_DIR" && -d "$RESERVED_DIR" ]]; then
+        rm -rf --one-file-system -- "$RESERVED_DIR"
+    fi
+
+    return 0
+}
+trap cleanup EXIT
+
+reject() {
+    error "$*"
+    log_action "SUBMIT" "${1:-unknown}" "REJECTED"
+    exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Argument validation
+# ---------------------------------------------------------------------------
+
+(($# == 3)) || {
+    echo "asms-store: internal error: wrong argument count" >&2
+    exit 2
+}
+
+USERNAME="$1"
+ASSIGNMENT="$2"
+SOURCE="$3"
+
+[[ $EUID -eq 0 ]] || {
+    echo "asms-store: must run as root" >&2
+    exit 2
+}
+
+validate_username "$USERNAME" >/dev/null 2>&1 ||
+    reject "Invalid account name."
+
+is_student_user "$USERNAME" ||
+    reject "Not a student account: ${USERNAME}"
+
+validate_assignment_name "$ASSIGNMENT" >/dev/null 2>&1 ||
+    reject "Invalid assignment name: ${ASSIGNMENT}"
+
+# ---------------------------------------------------------------------------
+# Source validation
+# ---------------------------------------------------------------------------
+#
+# Repeated independently of the shim. The path is re-resolved here rather
+# than trusting the one handed over.
+
+ASSIGNMENTS_DIR="$(student_assignments_path "$USERNAME")"
+
+resolved_assignments="$(readlink -f -- "$ASSIGNMENTS_DIR" 2>/dev/null)" ||
+    reject "Cannot resolve your assignments directory."
+
+resolved_source="$(readlink -f -- "$SOURCE" 2>/dev/null)" ||
+    reject "Cannot resolve the source path."
+
+[[ -n "$resolved_assignments" && -n "$resolved_source" ]] ||
+    reject "Cannot resolve submission paths."
+
+# Must be inside the student's own working area, and not the whole of it.
+[[ "$resolved_source" == "$resolved_assignments" ]] &&
+    reject "Refusing to submit the entire assignments directory."
+
+[[ "$resolved_source" == "${resolved_assignments}/"* ]] ||
+    reject "You can only submit work from ${resolved_assignments}"
+
+[[ -e "$resolved_source" ]] ||
+    reject "Source path does not exist: ${SOURCE}"
+
+# The source must belong to the submitting student. A path owned by someone
+# else inside their tree is not theirs to submit.
+source_owner="$(stat -c '%U' "$resolved_source")"
+[[ "$source_owner" == "$USERNAME" ]] ||
+    reject "You do not own ${SOURCE} (owned by ${source_owner})."
+
+# ---------------------------------------------------------------------------
+# Content validation
+# ---------------------------------------------------------------------------
+#
+# Symlinks are rejected outright.
+#
+# The copy runs as root, so a symlink is a way to ask root to reach a file
+# the student cannot read. Copying links as links (cp -a, never -L) avoids
+# reading the target, but would still place a pointer to an arbitrary path
+# into an archive that faculty later read with their own privileges.
+# Submitted source code has no need of symlinks, so the safe answer is to
+# refuse them and say so.
+if [[ -d "$resolved_source" ]]; then
+    first_link="$(find "$resolved_source" -type l -print -quit 2>/dev/null || true)"
+
+    [[ -z "$first_link" ]] ||
+        reject "Submission contains a symbolic link, which is not allowed: ${first_link#"$resolved_assignments"/}"
+
+    file_count="$(find "$resolved_source" -type f 2>/dev/null | wc -l)"
+    total_bytes="$(du -sb "$resolved_source" 2>/dev/null | cut -f1)"
+else
+    [[ ! -L "$resolved_source" ]] ||
+        reject "Submission is a symbolic link, which is not allowed."
+
+    file_count=1
+    total_bytes="$(stat -c '%s' "$resolved_source")"
+fi
+
+((file_count > 0)) ||
+    reject "Nothing to submit: ${SOURCE} contains no files."
+
+((file_count <= MAX_SUBMISSION_FILES)) ||
+    reject "Too many files: ${file_count} (limit ${MAX_SUBMISSION_FILES}). Remove build output before submitting."
+
+((total_bytes <= MAX_SUBMISSION_BYTES)) ||
+    reject "Submission too large: ${total_bytes} bytes (limit ${MAX_SUBMISSION_BYTES}). Remove build output before submitting."
+
+# ---------------------------------------------------------------------------
+# Capacity
+# ---------------------------------------------------------------------------
+#
+# The per-submission limits above bound a single call. They do nothing to
+# stop a student from calling submit under many different assignment names,
+# or resubmitting repeatedly, since versions are never deleted. These are
+# the backstop: a hard cap on one student's total archive, and a floor on
+# free space for the filesystem hosting SUBMISSION_ROOT, so no student --
+# even one within their own cap -- can starve backups, logging or every
+# other student's provisioning.
+
+ARCHIVE="$(student_archive_path "$USERNAME")"
+
+if [[ -d "$ARCHIVE" ]]; then
+    current_archive_bytes="$(du -sb "$ARCHIVE" 2>/dev/null | cut -f1)"
+    current_archive_bytes="${current_archive_bytes:-0}"
+else
+    current_archive_bytes=0
+fi
+
+projected_bytes=$((current_archive_bytes + total_bytes))
+
+((projected_bytes <= MAX_STUDENT_ARCHIVE_BYTES)) ||
+    reject "Archive quota exceeded: this submission would bring your total stored work to ${projected_bytes} bytes (limit ${MAX_STUDENT_ARCHIVE_BYTES}). Submitted work cannot be deleted to make room; ask an administrator to raise the limit if this is legitimate."
+
+free_bytes="$(df --output=avail -B1 "$SUBMISSION_ROOT" 2>/dev/null | tail -n 1 | tr -dc '0-9')"
+
+if [[ -n "$free_bytes" ]] && ((free_bytes < SUBMISSION_MIN_FREE_BYTES)); then
+    reject "Server is low on submission storage. Contact an administrator before retrying."
+fi
+
+# ---------------------------------------------------------------------------
+# Reserve a version
+# ---------------------------------------------------------------------------
+#
+# Versions are never reused and never overwritten, so a resubmission cannot
+# destroy an earlier attempt.
+#
+# The number is claimed with mkdir, which is atomic: two submissions racing
+# for the same number cannot both succeed, and the loser simply takes the
+# next one. Scanning for the highest and then creating it would be a race.
+
+ASSIGNMENT_DIR="${ARCHIVE}/${ASSIGNMENT}"
+
+[[ -d "$ARCHIVE" ]] ||
+    reject "No submission archive for ${USERNAME}. Ask an administrator to re-run provisioning."
+
+if [[ ! -d "$ASSIGNMENT_DIR" ]]; then
+    install -d -o root -g root -m 0750 "$ASSIGNMENT_DIR"
+
+    # Access for this student and for faculty, matching the archive root.
+    if cmd_exists setfacl; then
+        setfacl -m "u:${USERNAME}:rX" -m "g:${FACULTY_GROUP}:rX" "$ASSIGNMENT_DIR"
+        setfacl -d -m "u:${USERNAME}:rX" -m "g:${FACULTY_GROUP}:rX" "$ASSIGNMENT_DIR"
+    fi
+fi
+
+highest=0
+
+while IFS= read -r existing; do
+    [[ -n "$existing" ]] || continue
+    number="${existing#"$SUBMISSION_VERSION_PREFIX"}"
+    number="${number#"${number%%[!0]*}"}"   # strip leading zeros
+    [[ -n "$number" ]] || number=0
+    ((number > highest)) && highest="$number"
+done < <(
+    find "$ASSIGNMENT_DIR" -mindepth 1 -maxdepth 1 -type d \
+        -name "${SUBMISSION_VERSION_PREFIX}*" -printf '%f\n' 2>/dev/null | sort
+)
+
+VERSION=""
+
+for ((candidate = highest + 1; candidate <= 999; candidate++)); do
+    version_name="$(printf '%s%03d' "$SUBMISSION_VERSION_PREFIX" "$candidate")"
+    target="${ASSIGNMENT_DIR}/${version_name}"
+
+    # mkdir fails if it already exists, which is exactly the lock we want.
+    if mkdir -m 0750 "$target" 2>/dev/null; then
+        VERSION="$version_name"
+        RESERVED_DIR="$target"
+        break
+    fi
+done
+
+[[ -n "$VERSION" ]] ||
+    reject "Version limit reached for ${ASSIGNMENT} (999 submissions)."
+
+# ---------------------------------------------------------------------------
+# Copy
+# ---------------------------------------------------------------------------
+#
+# cp -a, never cp -aL: links are preserved as links rather than followed.
+# The tree was already rejected if it contained any.
+
+if [[ -d "$resolved_source" ]]; then
+    cp -a -- "${resolved_source}/." "${RESERVED_DIR}/"
+else
+    cp -a -- "$resolved_source" "${RESERVED_DIR}/"
+fi
+
+# Re-check for symlinks after the copy, not just before it.
+#
+# The pre-copy scan and this cp -a are two separate steps, and the source
+# lives inside the student's own writable ~/assignments the whole time --
+# that is the entire point of the directory. A script racing the two can
+# swap a checked-clean file for a symlink in the gap between them. cp -a
+# never dereferences a symlink, so root's own copy is not at risk, but a
+# symlink that slipped through would sit inside an archive that faculty
+# later browse with their own read privileges. Checking the state that is
+# about to be trusted -- not a snapshot taken before the copy ran -- closes
+# the window. The EXIT trap removes RESERVED_DIR on this failure.
+if [[ -n "$(find "$RESERVED_DIR" -type l -print -quit 2>/dev/null)" ]]; then
+    reject "Submission contained a symbolic link that appeared after validation; rejected. Do not modify files under ~/assignments while a submission is in progress."
+fi
+
+# Ownership is transferred to root.
+#
+# cp -a preserves the student as owner, and a file's owner can always chmod
+# it -- so a student would be able to make their own submitted files writable
+# again and edit them in place, defeating the archive. Owning nothing inside
+# it leaves them with only the read access their ACL grants.
+chown -R root:root -- "$RESERVED_DIR"
+
+# Modes are set explicitly, which also sets the ACL mask.
+#
+# On an ACL-bearing file the group bits ARE the mask, so this is deliberate
+# rather than the mistake it would be on the archive root: directories get
+# r-x and files r--, which is exactly the ceiling the student's and faculty's
+# rX entries should be capped at. Anything more permissive would let the mask
+# grant write.
+find "$RESERVED_DIR" -type d -exec chmod 0750 {} +
+find "$RESERVED_DIR" -type f -exec chmod 0640 {} +
+
+# Re-assert access explicitly rather than relying on default-ACL inheritance
+# surviving cp's attribute handling.
+if cmd_exists setfacl; then
+    setfacl -R -m "u:${USERNAME}:rX,g:${FACULTY_GROUP}:rX" "$RESERVED_DIR"
+fi
+
+# ---------------------------------------------------------------------------
+# Receipt
+# ---------------------------------------------------------------------------
+
+METADATA_DIR="${RESERVED_DIR}/metadata"
+install -d -o root -g root -m 0750 "$METADATA_DIR"
+
+# Hashes of the submitted files only: not the manifest, not the receipt.
+# A manifest that includes itself can never be verified.
+(
+    cd "$RESERVED_DIR"
+    find . -type f -not -path './metadata/*' -print0 |
+        sort -z |
+        xargs -0 --no-run-if-empty sha256sum
+) > "${METADATA_DIR}/MANIFEST.sha256"
+
+cat > "${METADATA_DIR}/receipt.txt" <<EOF
+ASMS Submission Receipt
+
+Student     : ${USERNAME}
+Assignment  : ${ASSIGNMENT}
+Version     : ${VERSION}
+Submitted   : $(timestamp)
+Host        : $(hostname_short)
+
+Files       : ${file_count}
+Bytes       : ${total_bytes}
+Source      : ${resolved_source}
+
+Stored at   : ${RESERVED_DIR}
+Visible at  : $(student_mount_path "$USERNAME")/${ASSIGNMENT}/${VERSION}
+
+File hashes are in MANIFEST.sha256 in this directory. Verify with:
+  cd $(student_mount_path "$USERNAME")/${ASSIGNMENT}/${VERSION}
+  sha256sum -c metadata/MANIFEST.sha256
+
+This submission is stored on the server and cannot be modified or deleted
+from your account.
+EOF
+
+chown -R root:root -- "$METADATA_DIR"
+chmod 0750 "$METADATA_DIR"
+chmod 0640 "${METADATA_DIR}/MANIFEST.sha256" "${METADATA_DIR}/receipt.txt"
+
+if cmd_exists setfacl; then
+    setfacl -R -m "u:${USERNAME}:rX,g:${FACULTY_GROUP}:rX" "$METADATA_DIR"
+fi
+
+# Committed. Past this point the trap must not remove it.
+SUBMITTED_DIR="$RESERVED_DIR"
+RESERVED_DIR=""
+
+# ---------------------------------------------------------------------------
+# Confirm
+# ---------------------------------------------------------------------------
+
+log_event "action" "SUBMIT" \
+    "student" "$USERNAME" \
+    "assignment" "$ASSIGNMENT" \
+    "version" "$VERSION" \
+    "files" "$file_count" \
+    "bytes" "$total_bytes"
+
+log_action "SUBMIT" "${USERNAME}/${ASSIGNMENT}/${VERSION}" "SUCCESS"
+
+view_path="$(student_mount_path "$USERNAME")/${ASSIGNMENT}/${VERSION}"
+
+echo
+success "Submitted ${ASSIGNMENT} as ${VERSION}"
+echo
+printf '  Files   : %s\n' "$file_count"
+printf '  Size    : %s bytes\n' "$total_bytes"
+printf '  Receipt : %s/metadata/receipt.txt\n' "$view_path"
+echo
+info "View your submission (read-only): ${view_path}"
+echo
+
+# Referenced for clarity in the log line above; keeps shellcheck quiet about
+# the committed path being assigned and not used.
+: "$SUBMITTED_DIR"

@@ -1,0 +1,34 @@
+[Unit]
+# Restores every student's read-only submission view after boot.
+#
+# The /etc/fstab entries mount the archives, but this unit is what guarantees
+# they are actually read-only. util-linux before 2.37 (Ubuntu 20.04 and
+# older) silently ignores `ro` on a single-step bind mount and mounts it
+# read-write, which would leave every student able to modify their own
+# submitted work until an administrator noticed.
+#
+# The unit is also the recovery path for a mount that is missing, points at
+# the wrong archive, or was remounted read-write by hand. It is idempotent
+# and cheap: correct mounts are left untouched.
+#
+# @PREFIX@ is substituted by install.sh.
+
+Description=ASMS student submission mounts (read-only enforcement)
+Documentation=file:@PREFIX@/README.md
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=@PREFIX@/modules/configure_mounts.sh --repair-all
+
+# A failure here means one student's view may be writable or missing, not
+# that the machine is unusable. Report it and let the system finish booting;
+# Verify Server surfaces it to the administrator.
+SuccessExitStatus=0
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

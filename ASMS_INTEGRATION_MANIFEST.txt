@@ -1,0 +1,66 @@
+ASMS v2.0 — Integration Repair Package
+Integration pass completed: 2026-08-11
+
+SINGLE ENTRY POINT — run this and nothing else:
+
+    sudo ./assignment-admin
+
+It detects whether it is running from this source tree or from an installed
+ASMS, and shows the appropriate menu. From source it offers installation and
+the tests, then hands over to the installed copy automatically.
+
+    sudo ./assignment-admin --install    install, then open the menu
+    sudo ./assignment-admin --check      dry run; report changes, make none
+    ./assignment-admin --test            offline self-tests (no root)
+    sudo assignment-admin --verify       server verification; exits 0 or 1
+
+
+DEPLOYMENT
+- assignment-admin              THE entry point (source and installed modes)
+- install.sh                    installer (idempotent; --check for a dry run)
+- VERSION
+- README.md
+- CHANGELOG.md
+- data/config.conf              canonical configuration, single source of truth
+- systemd/asms-mounts.service   boot-time read-only mount enforcement
+
+SHARED LIBRARY
+- utils.sh                      config, enumeration, validation, paths, output
+- logger.sh                     administrative logging (root-only, 0600)
+- generate_password.sh          the one password generator (sourceable)
+
+SUBMISSION
+- submit/asms-submit.c          setuid-root shim; identity from getuid()
+- submit/asms-store             root-only writer for the authoritative archive
+- configure_mounts.sh           THE authority on archives, ACLs, mounts, fstab
+
+ACCOUNTS
+- provision_students.sh
+- provision_faculty.sh
+- remove_students.sh            the shared destructive path
+- remove_faculty.sh
+
+SYSTEM
+- install_devtools.sh           dev environment + acl/auditd dependencies
+- generate_audit.sh             GID-based auditd rules
+- verify_server.sh              read-only health and security checks
+
+DATA
+- backup_system.sh
+- restore_backup.sh
+- reset_semester.sh
+
+TESTS
+- test_utils.sh                 shared library (no root, runs anywhere)
+- test_mounts.sh                fstab handling (no root, temp file)
+- integration_test.sh           full system on a real server (root, test box)
+
+REFERENCE
+- INTEGRATION_FIX_SPEC.md       the specification this pass implements
+- ASMS_INTEGRATION_MANIFEST.txt this file
+
+
+NOT INSTALLED TO /opt/assignment-server:
+install.sh, the test scripts, submit/ sources and systemd/ are build- and
+test-time files. install.sh compiles submit/ and installs the unit; the test
+scripts run from this source directory against the installed system.

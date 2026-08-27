@@ -1,0 +1,519 @@
+#!/usr/bin/env bash
+#
+# Assignment Server Management System (ASMS)
+# Administration interface
+# Version: 2.0.0
+# Codename: Genesis
+#
+# THE single entry point. Run this and nothing else:
+#
+#   sudo ./assignment-admin        from the source directory (installs first)
+#   sudo assignment-admin          once installed
+#
+# It contains no operational logic of its own: every action is a module
+# invocation, so behaviour is identical whether an administrator uses this
+# menu or calls a module directly.
+#
+# It runs in one of two modes, detected from where it finds itself:
+#
+#   SOURCE    -- sitting in the source tree next to install.sh, with no
+#                modules/ directory. Offers installation and the offline
+#                self-tests, then hands over to the installed copy.
+#   INSTALLED -- sitting in ASMS_ROOT with modules/ beside it. The full menu.
+#
+# The two modes exist so there is one file to remember rather than "run
+# install.sh, then run this other thing from somewhere else".
+#
+
+set -Eeuo pipefail
+
+SELF="$(readlink -f -- "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd -- "$(dirname -- "$SELF")" && pwd)"
+
+if [[ -f "${SELF_DIR}/modules/utils.sh" ]]; then
+    ASMS_MODE="installed"
+    ASMS_ROOT="$SELF_DIR"
+    MODULE_DIR="${SELF_DIR}/modules"
+elif [[ -f "${SELF_DIR}/utils.sh" && -f "${SELF_DIR}/install.sh" ]]; then
+    ASMS_MODE="source"
+    ASMS_ROOT="$SELF_DIR"
+    MODULE_DIR="$SELF_DIR"
+else
+    echo "ERROR: cannot locate the ASMS modules." >&2
+    echo "Expected either ${SELF_DIR}/modules/utils.sh (installed)" >&2
+    echo "or ${SELF_DIR}/utils.sh next to install.sh (source tree)." >&2
+    exit 1
+fi
+
+# shellcheck source=utils.sh
+source "${MODULE_DIR}/utils.sh"
+# shellcheck source=logger.sh
+source "${MODULE_DIR}/logger.sh"
+
+# Help and the offline self-tests genuinely do not need root, and demanding
+# sudo to read a help page is a wart in the one command people are told to
+# run. Everything else touches accounts, mounts or /opt.
+case "${1:-}" in
+    -h|--help|--test) ;;
+    *) require_root ;;
+esac
+
+# In source mode the configuration is the shipped copy, which is enough to
+# show paths and run the installer.
+ASMS_CONFIG_FILE="${ASMS_ROOT}/data/config.conf"
+load_config
+
+VERSION="unknown"
+BUILD="unknown"
+CODENAME="unknown"
+
+if [[ -f "${ASMS_ROOT}/VERSION" ]]; then
+    while IFS='=' read -r key value; do
+        case "$key" in
+            Version)  VERSION="$value" ;;
+            Build)    BUILD="$value" ;;
+            Codename) CODENAME="$value" ;;
+        esac
+    done < "${ASMS_ROOT}/VERSION"
+fi
+
+LAST_STATUS=""
+
+# ---------------------------------------------------------------------------
+
+# Runs a module and reports its exit status. Every module follows the same
+# contract: 0 on success, non-zero on failure. A failing module never
+# terminates the menu.
+run_module() {
+    local module="$1"
+    shift || true
+
+    local path="${MODULE_DIR}/${module}"
+
+    [[ -f "$path" ]] || { error "Module not found: $path"; LAST_STATUS="missing"; return 1; }
+    [[ -x "$path" ]] || { error "Module not executable: $path"; LAST_STATUS="not executable"; return 1; }
+
+    log_session_start "$module"
+
+    local rc=0
+    "$path" "$@" || rc=$?
+
+    if ((rc == 0)); then
+        log_session_end "$module" "SUCCESS"
+        LAST_STATUS="ok"
+    else
+        log_session_end "$module" "FAILED(rc=${rc})"
+        LAST_STATUS="failed (exit ${rc})"
+        echo
+        error "${module} exited with status ${rc}."
+    fi
+
+    return "$rc"
+}
+
+pause_screen() {
+    echo
+    read -r -p "Press Enter to continue..." _ || true
+}
+
+show_banner() {
+    clear 2>/dev/null || true
+
+    echo "=================================================="
+    echo " Assignment Server Management System"
+    echo "=================================================="
+    printf ' Version  : %s (%s)\n' "$VERSION" "$CODENAME"
+    printf ' Build    : %s\n' "$BUILD"
+    printf ' Host     : %s\n' "$(hostname_short)"
+    printf ' Students : %s\n' "$(count_users_in_group "$STUDENT_GROUP")"
+    printf ' Faculty  : %s\n' "$(count_users_in_group "$FACULTY_GROUP")"
+    [[ -n "$LAST_STATUS" ]] && printf ' Last     : %s\n' "$LAST_STATUS"
+    echo "=================================================="
+    echo
+}
+
+show_menu() {
+    echo "  Accounts"
+    echo "    1.  Provision students"
+    echo "    2.  Provision faculty"
+    echo "    3.  Remove students"
+    echo "    4.  Remove faculty"
+    echo
+    echo "  Submissions"
+    echo "    5.  Configure student mounts"
+    echo "    6.  Verify student mounts"
+    echo "    7.  Repair student mounts"
+    echo
+    echo "  System"
+    echo "    8.  Install development environment"
+    echo "    9.  Generate audit rules"
+    echo "    10. Verify server"
+    echo "    11. Security check only"
+    echo
+    echo "  Data"
+    echo "    12. Backup system"
+    echo "    13. Restore backup"
+    echo "    14. Semester reset"
+    echo
+    echo "  Info"
+    echo "    15. System information"
+    echo "    16. View recent activity log"
+    echo "    17. Exit"
+    echo
+}
+
+system_information() {
+    header "System Information"
+
+    printf '  %-24s %s\n' "ASMS version"    "$VERSION ($CODENAME)"
+    printf '  %-24s %s\n' "Build"           "$BUILD"
+    printf '  %-24s %s\n' "Install root"    "$ASMS_ROOT"
+    printf '  %-24s %s\n' "Hostname"        "$(hostname_short)"
+    printf '  %-24s %s\n' "Operating system" "$(os_description)"
+    printf '  %-24s %s\n' "Kernel"          "$(kernel_version)"
+    printf '  %-24s %s\n' "Architecture"    "$(uname -m)"
+    echo
+
+    printf '  %-24s %s\n' "Student group"   "$STUDENT_GROUP ($(count_users_in_group "$STUDENT_GROUP") accounts)"
+    printf '  %-24s %s\n' "Faculty group"   "$FACULTY_GROUP ($(count_users_in_group "$FACULTY_GROUP") accounts)"
+    echo
+
+    printf '  %-24s %s\n' "Submission root" "$SUBMISSION_ROOT"
+
+    if [[ -d "$SUBMISSION_ROOT" ]]; then
+        printf '  %-24s %s\n' "Submissions size" \
+            "$(du -sh "$SUBMISSION_ROOT" 2>/dev/null | cut -f1)"
+    fi
+
+    printf '  %-24s %s\n' "Backups"         "$BACKUP_ROOT"
+    printf '  %-24s %s\n' "Disk usage (/)"  "$(df -h / | awk 'NR==2 {print $5" of "$2}')"
+    echo
+
+    if [[ -x "$SUBMIT_BIN" ]]; then
+        printf '  %-24s %s\n' "submit" "installed ($(stat -c '%a %U:%G' "$SUBMIT_BIN"))"
+    else
+        printf '  %-24s %s\n' "submit" "NOT INSTALLED"
+    fi
+
+    if systemctl is-active --quiet auditd 2>/dev/null; then
+        printf '  %-24s %s\n' "auditd" "running"
+    else
+        printf '  %-24s %s\n' "auditd" "NOT RUNNING"
+    fi
+
+    if systemctl is-enabled asms-mounts.service >/dev/null 2>&1; then
+        printf '  %-24s %s\n' "asms-mounts.service" "enabled"
+    else
+        printf '  %-24s %s\n' "asms-mounts.service" "not enabled"
+    fi
+
+    echo
+    printf '  %-24s %s\n' "Active log" "$(log_file_path)"
+    echo
+}
+
+view_activity_log() {
+    header "Recent Activity"
+
+    local log
+    log="$(log_file_path)"
+
+    if [[ -f "$log" ]]; then
+        tail -n 40 "$log" | sed 's/^/  /'
+    else
+        warn "No activity recorded yet."
+    fi
+
+    echo
+    info "Full log: $log"
+    echo
+}
+
+# ---------------------------------------------------------------------------
+# Source mode
+# ---------------------------------------------------------------------------
+#
+# Running from the source tree, before (or after) installation. Only the
+# things that make sense here are offered: installing, previewing an install,
+# and the two offline self-tests.
+
+installed_admin_path() {
+    printf '%s/assignment-admin' "${PREFIX_GUESS:-/opt/assignment-server}"
+}
+
+run_installer() {
+    local mode="${1:-install}"
+
+    header "Install ASMS"
+
+    if [[ "$mode" == "check" ]]; then
+        ASMS_VIA_ADMIN=1 "${SELF_DIR}/install.sh" --check || true
+        return 0
+    fi
+
+    if ! ASMS_VIA_ADMIN=1 "${SELF_DIR}/install.sh"; then
+        error "Installation failed. Nothing was handed over."
+        return 1
+    fi
+
+    local installed
+    installed="$(installed_admin_path)"
+
+    [[ -x "$installed" ]] || {
+        warn "Installed, but ${installed} is not executable."
+        return 1
+    }
+
+    echo
+    success "ASMS is installed."
+    echo
+    info "Handing over to the installed copy at ${installed}"
+    info "From now on you can simply run:  sudo assignment-admin"
+    echo
+    read -r -p "Press Enter to continue..." _ || true
+
+    # Replace this process with the installed admin, so the administrator
+    # lands in the full menu without running a second command.
+    exec "$installed"
+}
+
+run_self_tests() {
+    header "Offline Self-Tests"
+
+    info "These need no root and change nothing on this host."
+    echo
+
+    local failures=0 test_script
+
+    for test_script in test_utils.sh test_mounts.sh test_remove_students.sh test_check_submissions.sh; do
+        if [[ ! -f "${SELF_DIR}/${test_script}" ]]; then
+            warn "${test_script} is not present; skipping."
+            continue
+        fi
+
+        echo
+        printf '\033[34m-- %s --\033[0m\n' "$test_script"
+
+        bash "${SELF_DIR}/${test_script}" || failures=$((failures + 1))
+    done
+
+    echo
+
+    if ((failures == 0)); then
+        success "All offline self-tests passed."
+    else
+        error "${failures} test script(s) reported failures."
+        warn "Do not install until these pass."
+    fi
+}
+
+run_integration_test() {
+    header "Full Integration Test"
+
+    [[ -f "${SELF_DIR}/integration_test.sh" ]] || {
+        error "integration_test.sh is not present."
+        return 1
+    }
+
+    warn "This creates and deletes real accounts (asmstest_*)."
+    warn "Run it on a test machine, never on a live server."
+    echo
+
+    confirm "Run the full integration test now?" || { info "Cancelled."; return 0; }
+
+    bash "${SELF_DIR}/integration_test.sh" || true
+}
+
+source_banner() {
+    clear 2>/dev/null || true
+
+    local installed
+    installed="$(installed_admin_path)"
+
+    echo "=================================================="
+    echo " Assignment Server Management System"
+    echo "=================================================="
+    printf ' Version : %s (%s)\n' "$VERSION" "$CODENAME"
+    printf ' Mode    : SOURCE (not yet installed)\n'
+    printf ' Source  : %s\n' "$SELF_DIR"
+
+    if [[ -x "$installed" ]]; then
+        printf ' Existing: %s  <- already installed\n' "$installed"
+    else
+        printf ' Target  : %s\n' "${PREFIX_GUESS:-/opt/assignment-server}"
+    fi
+
+    echo "=================================================="
+    echo
+}
+
+source_menu_loop() {
+    local installed
+    installed="$(installed_admin_path)"
+
+    while true; do
+        source_banner
+
+        echo "  Setup"
+        echo "    1. Install / upgrade ASMS on this server"
+        echo "    2. Preview what installation would change (no changes made)"
+        echo
+        echo "  Tests"
+        echo "    3. Run offline self-tests (safe anywhere)"
+        echo "    4. Run full integration test (test machines only)"
+        echo
+
+        # "Open installed menu" only exists once ASMS is installed. Keeping it
+        # the last numbered item means the menu stays contiguous either way:
+        # 1-4 then Exit before install, 1-5 then Exit after. Exit's number
+        # therefore shifts, so it is computed rather than hard-coded.
+        local open_choice="" exit_choice="5"
+        if [[ -x "$installed" ]]; then
+            echo "  Manage"
+            echo "    5. Open the installed administration menu"
+            echo
+            open_choice="5"
+            exit_choice="6"
+        fi
+
+        echo "    ${exit_choice}. Exit"
+        echo
+
+        local choice
+        read -r -p "Choice: " choice || { echo; exit 0; }
+        echo
+
+        case "$choice" in
+            1) run_installer install || true; pause_screen ;;
+            2) run_installer check   || true; pause_screen ;;
+            3) run_self_tests        || true; pause_screen ;;
+            4) run_integration_test  || true; pause_screen ;;
+            q|quit|exit) echo "Exiting."; exit 0 ;;
+            *)
+                if [[ -n "$open_choice" && "$choice" == "$open_choice" ]]; then
+                    exec "$installed"
+                elif [[ "$choice" == "$exit_choice" ]]; then
+                    echo "Exiting."; exit 0
+                else
+                    error "Invalid choice: $choice"
+                    sleep 1
+                fi
+                ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Installed mode
+# ---------------------------------------------------------------------------
+
+main_loop() {
+    while true; do
+        show_banner
+        show_menu
+
+        local choice
+        read -r -p "Choice: " choice || { echo; exit 0; }
+        echo
+
+        case "$choice" in
+            1)  run_module provision_students.sh  || true; pause_screen ;;
+            2)  run_module provision_faculty.sh   || true; pause_screen ;;
+            3)  run_module remove_students.sh     || true; pause_screen ;;
+            4)  run_module remove_faculty.sh      || true; pause_screen ;;
+
+            5)  run_module configure_mounts.sh    || true; pause_screen ;;
+            6)  run_module configure_mounts.sh --verify-all || true; pause_screen ;;
+            7)  run_module configure_mounts.sh --repair-all || true; pause_screen ;;
+
+            8)  run_module install_devtools.sh    || true; pause_screen ;;
+            9)  run_module generate_audit.sh      || true; pause_screen ;;
+            10) run_module verify_server.sh       || true; pause_screen ;;
+            11) run_module verify_server.sh --security || true; pause_screen ;;
+
+            12) run_module backup_system.sh       || true; pause_screen ;;
+            13) run_module restore_backup.sh      || true; pause_screen ;;
+            14) run_module reset_semester.sh      || true; pause_screen ;;
+
+            15) system_information; pause_screen ;;
+            16) view_activity_log;  pause_screen ;;
+
+            17|q|quit|exit)
+                log_info "Administrator exited ASMS"
+                echo "Exiting."
+                exit 0
+                ;;
+            *)
+                error "Invalid choice: $choice"
+                sleep 1
+                ;;
+        esac
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Entry
+# ---------------------------------------------------------------------------
+
+# The install prefix this source tree would target. Honours a custom prefix
+# so the handover after installation finds the right copy.
+PREFIX_GUESS="${ASMS_INSTALL_PREFIX:-/opt/assignment-server}"
+
+usage() {
+    cat <<EOF
+Usage: assignment-admin [option]
+
+The single entry point for ASMS. With no option it opens a menu appropriate
+to where it is being run from.
+
+  --install     Install or upgrade ASMS, then open the admin menu
+  --check       Report what installation would change; change nothing
+  --test        Run the offline self-tests
+  --verify      Run server verification and exit with its status
+  -h, --help    Show this help
+
+Before installation, from the source directory:
+  sudo ./assignment-admin
+
+After installation, from anywhere:
+  sudo assignment-admin
+EOF
+}
+
+case "${1:-}" in
+    -h|--help)
+        usage
+        exit 0
+        ;;
+    --install)
+        [[ "$ASMS_MODE" == "source" ]] ||
+            die "--install must be run from the ASMS source directory."
+        run_installer install
+        ;;
+    --check)
+        [[ "$ASMS_MODE" == "source" ]] ||
+            die "--check must be run from the ASMS source directory."
+        run_installer check
+        ;;
+    --test)
+        [[ "$ASMS_MODE" == "source" ]] ||
+            die "--test must be run from the ASMS source directory."
+        run_self_tests
+        ;;
+    --verify)
+        [[ "$ASMS_MODE" == "installed" ]] ||
+            die "--verify requires an installed ASMS. Run --install first."
+        exec "${MODULE_DIR}/verify_server.sh"
+        ;;
+    "")
+        if [[ "$ASMS_MODE" == "source" ]]; then
+            source_menu_loop
+        else
+            main_loop
+        fi
+        ;;
+    *)
+        usage >&2
+        die "Unknown option: $1"
+        ;;
+esac
