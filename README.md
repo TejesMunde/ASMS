@@ -19,6 +19,7 @@ web dashboard — every interaction is a terminal command over SSH.
 - [`assignment-admin` — the one command](#assignment-admin--the-one-command)
 - [Command reference](#command-reference)
 - [Faculty tool: `assignment-check`](#faculty-tool-assignment-check)
+- [Faculty web page: viewing submissions](#faculty-web-page-viewing-submissions)
 - [Configuration](#configuration)
 - [Development environment](#development-environment)
 - [Audit](#audit)
@@ -153,7 +154,9 @@ ASMS_v2.0/
 │                           configure_mounts.sh, verify_server.sh, backup/restore,
 │                           check_submissions.sh, the test_*.sh suite, ...)
 ├── submit/                asms-submit.c (setuid shim) + asms-store (root helper)
-├── systemd/               asms-mounts.service (boot-time mount enforcement)
+├── systemd/               asms-mounts.service (boot-time mount enforcement),
+│                           asms-web.service (faculty web page)
+├── web/                   asms-web (read-only faculty web page, Python stdlib)
 ├── data/config.conf       the single source of truth for shared values
 ├── docs/                  student_guide.md, faculty_guide.md
 ├── README.md / CHANGELOG.md
@@ -184,6 +187,8 @@ way it already resolved the installed `modules/` directory.
 /usr/local/bin/submit                setuid-root shim (4755)
 /usr/local/libexec/asms-store        root-only store helper (0700)
 /usr/local/bin/assignment-check      faculty submission-status tool, not setuid (0755)
+/usr/local/libexec/asms-web          faculty web page, runs as asms-web (0755)
+/etc/asms-web/                       its TLS certificate and key (0750 root:asms-web)
 ```
 
 `/opt/assignment-server` itself is `0700 root:root` — nothing under it is
@@ -460,6 +465,49 @@ configuration is baked in with `sed` at install time, the same way
 
 ---
 
+## Faculty web page: viewing submissions
+
+Faculty who would rather not use a terminal can view submissions in any
+browser:
+
+```
+https://<server>:8443/
+```
+
+They sign in with their normal server username and password. Students are
+refused even with a correct password, and five wrong passwords lock that
+username out of the page for five minutes.
+
+The page uses large text and big buttons and only shows work; nothing on it
+changes anything. Faculty choose an assignment, then a student (the list
+shows how many attempts each made and when they last submitted), and press
+**View submission**. That page lists every attempt, a table of the attempt's
+files with sizes, and then the full contents of each text file. Any file,
+including PDFs and other binary files, can be downloaded; downloads are never
+opened inside the page, so a submitted `.html` file cannot run there. Older
+attempts can be opened for comparison.
+
+**Certificate.** The installer creates a self-signed certificate, so browsers
+warn on the first visit. To avoid that, replace `/etc/asms-web/tls.crt` and
+`tls.key` with a real certificate and run `systemctl restart asms-web`.
+
+**Firewall.** If one is running, open the port: `ufw allow 8443/tcp`. The
+port is `WEB_PORT` in `data/config.conf` (default `8443`); re-run the
+installer after changing it.
+
+**How it runs.** `asms-web.service` runs as an unprivileged `asms-web`
+account with no password, shell, or home. It gets two supplementary groups
+from the systemd unit, not from `/etc/group`: `faculty`, for the same
+`g:faculty:rX` read access faculty already have, and `shadow`, so PAM can
+check passwords (through `/etc/pam.d/asms-web`, which includes the normal
+`common-auth` and `common-account`). Because the groups are not in
+`/etc/group`, the account never counts as faculty and Remove Faculty can
+never touch it. The whole filesystem is read-only to it. Its TLS key lives
+in `/etc/asms-web/`, outside `/opt/assignment-server`, which is root-only.
+Problems show up in `journalctl -u asms-web`.
+
+---
+
 ## Configuration
 
 `data/config.conf` defines every shared value — groups, paths, permission
@@ -649,6 +697,8 @@ Full walkthroughs with real captured terminal output live in [`docs/`](docs/):
 - Ubuntu 20.04+ / Debian 11+
 - root access
 - `acl`, `auditd`, `gcc` (installed by the development environment module)
+- `python3` and `openssl` for the faculty web page (present on a standard
+  Ubuntu/Debian install)
 
 `shellcheck` is installed with the development environment; the Definition of
 Done requires the modules to pass it.

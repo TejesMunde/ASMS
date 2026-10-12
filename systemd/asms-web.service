@@ -1,0 +1,39 @@
+[Unit]
+# The faculty submissions web page (read-only).
+#
+# Runs as the unprivileged asms-web account. The two supplementary groups are
+# granted here rather than in /etc/group, so asms-web never shows up when
+# ASMS enumerates faculty and can never be picked up by Remove Faculty:
+#   faculty -- read submissions (g:faculty:rX ACL)
+#   shadow  -- pam_unix checks passwords against /etc/shadow
+#
+# @PREFIX@ is substituted by install.sh.
+
+Description=ASMS faculty submissions web page
+Documentation=file:@PREFIX@/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=asms-web
+Group=asms-web
+SupplementaryGroups=@FACULTY_GROUP@ shadow
+ExecStart=/usr/local/libexec/asms-web
+Restart=on-failure
+
+# It never writes anything: the whole filesystem is read-only to it.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
