@@ -151,6 +151,12 @@ implementation per responsibility.
 
 ### Added
 
+- Faculty submissions web page (`asms-web.service`, HTTPS on `WEB_PORT`).
+  Faculty sign in with their Linux password and students are refused. They
+  pick an assignment and a student and see every attempt: the list of files
+  with sizes and the full contents of each file, with downloads. Read-only:
+  it writes nothing. Python standard library only; it runs unprivileged
+  with systemd hardening.
 - `install.sh` — the scaffold had no deployment path at all. Every module
   sourced `/opt/assignment-server/modules/utils.sh`, but nothing put files
   there, so no module could run. Idempotent; upgrades without destroying

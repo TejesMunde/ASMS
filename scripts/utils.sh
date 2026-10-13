@@ -88,6 +88,7 @@ load_config() {
     FACULTY_GROUP="${FACULTY_GROUP:-faculty}"
 
     SUBMISSION_ROOT="${SUBMISSION_ROOT:-/srv/submissions}"
+    WEB_PORT="${WEB_PORT:-8443}"
     STUDENT_HOME_ROOT="${STUDENT_HOME_ROOT:-/home}"
     BACKUP_ROOT="${BACKUP_ROOT:-${ASMS_ROOT}/backups}"
     SEMESTER_ARCHIVE_ROOT="${SEMESTER_ARCHIVE_ROOT:-${ASMS_ROOT}/archive/semesters}"

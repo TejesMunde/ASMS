@@ -17,3 +17,6 @@ submit/asms-submit
 *.swp
 .DS_Store
 Thumbs.db
+
+# Private working notes (chat summaries) -- kept locally, never published
+CHAT_SUMMARY.md

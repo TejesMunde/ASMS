@@ -457,6 +457,54 @@ stage_faculty_access() {
 
     must_fail "faculty CANNOT delete a submission" \
         as_user "$FACULTY" rm -f "$a_file"
+
+    stage_web_login
+}
+
+# Signs in to the submissions page with the test accounts' real passwords, so
+# this exercises PAM and the faculty-only rule, not just the configuration.
+stage_web_login() {
+    if ! systemctl is-active --quiet asms-web.service 2>/dev/null || ! cmd_exists curl; then
+        t_skip "submissions web page sign-in" "asms-web.service not running or curl missing"
+        return
+    fi
+
+    local url="https://127.0.0.1:${WEB_PORT}/login" student_pw faculty_pw
+    student_pw="$(awk -F, -v u="$STUDENT_A" '$1 == u { print $2 }' "$STUDENT_CREDENTIALS")"
+    faculty_pw="$(awk -F, -v u="$FACULTY" '$1 == u { print $3 }' "$FACULTY_CREDENTIALS")"
+
+    # Prints the response body, then the HTTP status on the last line.
+    web_login() {
+        curl -sk -w '\n%{http_code}' \
+            --data-urlencode "username=$1" \
+            --data-urlencode "password=$2" "$url"
+    }
+
+    local response
+
+    # Provisioning expires new passwords (chage -d 0). The page must then
+    # ask for a change over SSH, which it only does once PAM has accepted the
+    # password and the account is faculty.
+    if chage -l "$FACULTY" 2>/dev/null | grep -q "must be changed"; then
+        response="$(web_login "$FACULTY" "$faculty_pw")"
+        grep -q "must be changed" <<< "$response" &&
+            t_pass "faculty with an expired password is told to change it over SSH" ||
+            t_fail "faculty with an expired password is told to change it over SSH" \
+                "status $(tail -n 1 <<< "$response")"
+
+        chage -d "$(date +%Y-%m-%d)" "$FACULTY"
+    fi
+
+    response="$(web_login "$FACULTY" "$faculty_pw")"
+    [[ "$(tail -n 1 <<< "$response")" == "303" ]] &&
+        t_pass "faculty can sign in to the submissions page" ||
+        t_fail "faculty can sign in to the submissions page" "check: journalctl -u asms-web"
+
+    response="$(web_login "$STUDENT_A" "$student_pw")"
+    grep -q "not a faculty account" <<< "$response" &&
+        t_pass "student CANNOT sign in to the submissions page, even with their password" ||
+        t_fail "student CANNOT sign in to the submissions page" \
+            "status $(tail -n 1 <<< "$response")"
 }
 
 stage_audit() {

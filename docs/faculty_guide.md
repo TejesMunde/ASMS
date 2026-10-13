@@ -3,9 +3,38 @@
 Version 2.0.0 · For faculty reviewing student submissions
 
 This guide covers everything you need to access and verify student
-submissions on the assignment server. There is no web dashboard — access is
-entirely through the terminal (SSH), and it's read-only by design: you can
-read anything a student has submitted, but you cannot modify or delete it.
+submissions on the assignment server. You can read submissions in a web
+browser (next section) or through the terminal (SSH, sections 1–8). Either
+way access is read-only by design: you can read anything a student has
+submitted, but you cannot modify or delete it.
+
+## Prefer a browser? Use the submissions page
+
+Open this address in any browser, using the server's name or address:
+
+```
+https://<server-address>:8443/
+```
+
+Sign in with the **same username and password** you use for the server.
+
+1. **Choose an assignment** and press **Open**.
+2. **Choose a student** and press **View submission**. The list shows how
+   many times each student submitted and when they last did.
+3. You see every attempt the student made (the latest is shown first), a
+   list of their files, and below it the full text of each file. Use
+   **Download** to open PDFs and other files on your own computer.
+
+Good to know:
+
+- **The first visit shows a security warning.** The server uses its own
+  certificate. If your administrator has told you to, choose *Advanced* and
+  then *Proceed* / *Accept the risk*. You only need to do this once per
+  browser.
+- **New account?** Log in with SSH once first (section 1) to set your own
+  password. The page will remind you if you haven't.
+- **Five wrong passwords** lock the page for that username for five minutes.
+- Press **Sign out** (top right) when you're done on a shared computer.
 
 Every terminal example below is **real output**, captured from the actual
 server (student account `demo01`, faculty account `pta1`). Your own

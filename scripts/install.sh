@@ -5,7 +5,8 @@
 # Version: 2.0.0
 #
 # Installs this source tree into /opt/assignment-server and wires up the
-# system-level pieces (groups, submission root, submit command).
+# system-level pieces (groups, submission root, submit command, and the
+# faculty submissions web page).
 #
 # This script is deliberately self-contained: it cannot source utils.sh,
 # because utils.sh is one of the things it installs.
@@ -213,8 +214,13 @@ load_source_config() {
     FACULTY_GROUP="${FACULTY_GROUP:-faculty}"
     SUBMISSION_ROOT="${SUBMISSION_ROOT:-/srv/submissions}"
     SUBMISSION_ROOT_MODE="${SUBMISSION_ROOT_MODE:-0711}"
+    SUBMISSION_VERSION_PREFIX="${SUBMISSION_VERSION_PREFIX:-submission-}"
     SUBMIT_BIN="${SUBMIT_BIN:-/usr/local/bin/submit}"
     SUBMIT_STORE_HELPER="${SUBMIT_STORE_HELPER:-/usr/local/libexec/asms-store}"
+    WEB_PORT="${WEB_PORT:-8443}"
+    # Outside PREFIX: the service reads its TLS key here, and PREFIX is
+    # root-only.
+    WEB_DIR="/etc/asms-web"
 }
 
 # ---------------------------------------------------------------------------
@@ -504,6 +510,126 @@ install_check_submissions() {
     success "Installed $target"
 }
 
+# The faculty submissions web page.
+#
+# A read-only, standard-library Python service serving HTTPS on WEB_PORT. It
+# runs as the unprivileged asms-web account and cannot read the root-only
+# modules or config.conf, so the values it needs are baked in here, as for
+# asms-store.
+install_web() {
+    step "Faculty submissions web page"
+
+    local source="${REPO_ROOT}/web/asms-web"
+    local unit_source="${REPO_ROOT}/systemd/asms-web.service"
+    local unit_target="/etc/systemd/system/asms-web.service"
+
+    if [[ ! -f "$source" || ! -f "$unit_source" ]]; then
+        warn "web page sources not present in this tree; skipping."
+        warn "  expected: web/asms-web and systemd/asms-web.service"
+        return 0
+    fi
+
+    local command_name
+    for command_name in python3 openssl systemctl; do
+        if ! command -v "$command_name" >/dev/null 2>&1; then
+            warn "$command_name is not installed; skipping the web page."
+            warn "Run the development environment installer, then re-run install.sh."
+            return 0
+        fi
+    done
+
+    if ((CHECK_ONLY)); then
+        info "Would create:            asms-web service account and PAM entry"
+        info "Would create:            ${WEB_DIR}/tls.crt (self-signed, if absent)"
+        info "Would install and start: asms-web.service (https port ${WEB_PORT})"
+        return 0
+    fi
+
+    create_web_account
+    create_web_certificate
+
+    [[ -n "$BUILD_DIR" ]] || BUILD_DIR="$(mktemp -d)"
+
+    sed -e "s|@SUBMISSION_ROOT@|${SUBMISSION_ROOT}|g" \
+        -e "s|@SUBMISSION_VERSION_PREFIX@|${SUBMISSION_VERSION_PREFIX}|g" \
+        -e "s|@STUDENT_GROUP@|${STUDENT_GROUP}|g" \
+        -e "s|@FACULTY_GROUP@|${FACULTY_GROUP}|g" \
+        -e "s|@WEB_PORT@|${WEB_PORT}|g" \
+        -e "s|@WEB_DIR@|${WEB_DIR}|g" \
+        "$source" > "${BUILD_DIR}/asms-web"
+
+    install -d -o root -g root -m 0755 /usr/local/libexec
+    install -o root -g root -m 0755 "${BUILD_DIR}/asms-web" /usr/local/libexec/asms-web
+
+    sed -e "s|@PREFIX@|${PREFIX}|g" \
+        -e "s|@FACULTY_GROUP@|${FACULTY_GROUP}|g" \
+        "$unit_source" > "$unit_target"
+    chown root:root "$unit_target"
+    chmod 0644 "$unit_target"
+
+    systemctl daemon-reload
+    systemctl enable asms-web.service >/dev/null 2>&1 ||
+        warn "Could not enable asms-web.service; enable it manually."
+
+    # restart, not start: an upgrade must replace the running copy.
+    if systemctl restart asms-web.service; then
+        success "asms-web.service running: $(web_url)"
+    else
+        warn "asms-web.service did not start; see: journalctl -u asms-web"
+    fi
+}
+
+# The service account, and the PAM entry faculty sign in through.
+#
+# The account's faculty and shadow groups come from the systemd unit, not
+# /etc/group, so it is never enumerated as a faculty member.
+create_web_account() {
+    if ! getent passwd asms-web >/dev/null; then
+        useradd --system --user-group --no-create-home \
+            --home-dir /nonexistent --shell /usr/sbin/nologin asms-web
+        success "Created service account: asms-web"
+    fi
+
+    # The same password check as a normal login.
+    if [[ ! -f /etc/pam.d/asms-web ]]; then
+        printf '%s\n' \
+            '# ASMS faculty submissions page: the same password check as a login.' \
+            '@include common-auth' \
+            '@include common-account' > /etc/pam.d/asms-web
+        success "Created PAM entry: /etc/pam.d/asms-web"
+    fi
+}
+
+# A self-signed certificate, made once and never overwritten. Replacing
+# tls.crt and tls.key with a real certificate removes the browser's
+# first-visit warning.
+create_web_certificate() {
+    local host
+    host="$(hostname -f 2>/dev/null || hostname)"
+
+    install -d -o root -g asms-web -m 0750 "$WEB_DIR"
+
+    if [[ ! -f "${WEB_DIR}/tls.key" ]]; then
+        openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+            -subj "/CN=${host}" \
+            -addext "subjectAltName=DNS:${host},DNS:$(hostname -s)" \
+            -keyout "${WEB_DIR}/tls.key" -out "${WEB_DIR}/tls.crt" \
+            >/dev/null 2>&1 ||
+            die "Failed to create the web page's TLS certificate."
+
+        success "Created self-signed certificate: ${WEB_DIR}/tls.crt"
+    fi
+
+    # The key is readable by the service and nobody else.
+    chown root:asms-web "${WEB_DIR}/tls.key" "${WEB_DIR}/tls.crt"
+    chmod 0640 "${WEB_DIR}/tls.key"
+    chmod 0644 "${WEB_DIR}/tls.crt"
+}
+
+web_url() {
+    printf 'https://%s:%s/' "$(hostname -f 2>/dev/null || hostname)" "$WEB_PORT"
+}
+
 # Boot-time mount restoration.
 #
 # fstab alone is not sufficient: util-linux before 2.37 ignores `ro` on a
@@ -559,6 +685,7 @@ show_summary() {
     printf '  %-22s %s\n' "Submission root" "$SUBMISSION_ROOT"
     printf '  %-22s %s\n' "Student group"   "$STUDENT_GROUP"
     printf '  %-22s %s\n' "Faculty group"   "$FACULTY_GROUP"
+    printf '  %-22s %s\n' "Faculty web page" "$(web_url)"
     echo
 
     if ((CHECK_ONLY)); then
@@ -605,6 +732,7 @@ main() {
     install_config
     install_submit
     install_check_submissions
+    install_web
     install_systemd_unit
     show_summary
 }
